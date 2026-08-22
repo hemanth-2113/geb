@@ -1,0 +1,289 @@
+---
+title: "Actian VectorAI DB vs. pgvector: Which Handles Semantic Search at Scale?"
+description: "Compare Actian VectorAI DB and pgvector for semantic search. See benchmark results, deployment tradeoffs, latency, scale, and the right fit for RAG."
+slug: "/actian-vectorai-db-vs-pgvector"
+---
+
+## The right vector database depends on the production constraint
+
+A semantic-search prototype can run almost anywhere. Production systems have stricter requirements. Tail latency affects user experience, memory limits affect index design, and offline applications may need retrieval to run without a database connection.
+
+The short answer is straightforward:
+
+- **pgvector fits applications that already rely on PostgreSQL and want vectors, relational records, SQL queries, replication, and existing database operations in one system.**
+- **Actian VectorAI DB fits applications that need standalone or embedded vector retrieval, local and offline operation, edge deployment, or a tighter latency target.**
+
+The choice depends on four questions:
+
+1. **Performance:** What throughput, recall, p95, and p99 latency does the application require?
+2. **Deployment:** Must vector search run beside PostgreSQL, or independently on local and edge hardware?
+3. **Operations:** Which team owns scaling, backups, replication, monitoring, and recovery?
+4. **Workload:** Does the application need relational joins and PostgreSQL access controls, or primarily fast local vector retrieval?
+
+Our published VectorAI DB benchmark reports 1,040 QPS, 99.48% recall, 11.3 ms p95 latency, and 12.7 ms p99 latency on 1 million vectors with 768 dimensions. That result comes from a documented configuration and should be treated as workload-specific evidence, not a universal ranking.
+
+For a PostgreSQL-centered application, pgvector may remain the simpler architectural choice. For local RAG, edge inference, disconnected systems, and applications with a sub-20 ms to 50 ms p99 target, VectorAI DB deserves direct evaluation.
+
+## Actian VectorAI DB and pgvector solve different infrastructure problems
+
+pgvector is an open-source PostgreSQL extension for storing and searching vectors inside PostgreSQL. It supports approximate nearest-neighbor indexes, including HNSW and IVFFlat, and lets teams query vector data through SQL alongside their relational records.
+
+Actian VectorAI DB is a standalone vector database. It can run through a local Docker instance without requiring PostgreSQL, giving applications an independent vector-retrieval layer for local, embedded, on-premises, edge, and offline environments.
+
+That difference changes the architecture before it changes the benchmark score.
+
+With pgvector, vectors share PostgreSQL's compute, memory, storage, query-planning resources, backup process, and operational lifecycle. This can reduce integration work when PostgreSQL already owns the application's records and metadata. It also means vector search operates within the same database environment as transactional and relational workloads.
+
+With VectorAI DB, vector retrieval has a separate deployment boundary. The application can place the vector engine closer to the data and inference workload, including on local or edge hardware. That model is useful when the application must continue retrieving information while disconnected, or when adding a full PostgreSQL instance would impose too much infrastructure for the device.
+
+The [pgvector repository](https://github.com/pgvector/pgvector) documents the extension's indexing, filtering, loading, replication, and tuning options. Our [Actian comparison and benchmark](https://www.actian.com/blog/developer/is-actian-vectorai-db-the-best-embedded-pgvector-alternative) covers the VectorAI DB deployment model and the published 1 million-vector performance result.
+
+The architectural question is therefore: **Where should vector search live?**
+
+## How do the published performance results compare?
+
+Our published VectorAI DB result uses a 1 million-vector dataset with 768 dimensions. Under the documented test configuration, VectorAI DB delivered:
+
+| Metric | Actian VectorAI DB result |
+| --- | --- |
+| Dataset | 1 million vectors |
+| Vector dimensions | 768 |
+| Recall | 99.48% |
+| Throughput | 1,040 QPS |
+| p95 latency | 11.3 ms |
+| p99 latency | 12.7 ms |
+| Hardware | 64 GB RAM |
+| HNSW m | 32 |
+| HNSW ef_construction | 512 |
+| HNSW ef_search | 512 |
+
+The supplied comparison reports different pgvector results under different configurations. One cited test on 1 million 768-dimensional vectors reports 89 ms p95 latency and 124 ms p99 latency at 99.1% recall. Another test reports 360 QPS and 124 ms p99 latency with different HNSW parameters.
+
+These figures are useful for framing the architectural decision. They are not an apples-to-apples ranking. Hardware, PostgreSQL configuration, index parameters, memory pressure, filtering behavior, concurrency, query mix, and recall targets all affect the result. Peak QPS from one test cannot be compared directly with sustained throughput from another.
+
+The pgvector documentation explains why HNSW and IVFFlat behave differently. HNSW generally provides a stronger speed and recall tradeoff, while requiring more memory and a longer index build. IVFFlat uses less memory and builds faster, with a different query-performance tradeoff. Parameters such as `m`, `ef_construction`, `ef_search`, and IVFFlat probes influence both recall and latency.
+
+Filtering adds another variable. With approximate indexes, pgvector applies filtering after the index scan. If a condition matches a small share of the table, the default search breadth may return too few filtered results. The pgvector documentation describes iterative scans, partial indexes, and partitioning as ways to address filtered workloads.
+
+The practical conclusion is simple: benchmark the configuration you intend to operate. A result that meets a 12.7 ms p99 target on one machine may not meet it after adding tenant filters, relational joins, concurrent writes, cold starts, or a larger embedding collection.
+
+## Where does pgvector fit best?
+
+pgvector is strongest when PostgreSQL already serves as the application's primary data layer.
+
+A team can keep embeddings beside users, products, documents, permissions, and application metadata. SQL can combine relational predicates with vector similarity queries. Existing PostgreSQL workflows can cover monitoring, access controls, backups, point-in-time recovery, and replication through write-ahead logging.
+
+That integration reduces migration friction. Engineers who already know PostgreSQL can use familiar tables, transactions, roles, tooling, and deployment practices. The team also avoids introducing a separate vector service for workloads that fit the existing database.
+
+The [pgvector repository](https://github.com/pgvector/pgvector) documents both HNSW and IVFFlat indexes, vector distance operators, filtering patterns, index creation, bulk loading, partitioning, and quantization options. It also documents operational techniques such as:
+
+- Loading data with `COPY`
+- Creating indexes with `CREATE INDEX CONCURRENTLY`
+- Inspecting query plans with `EXPLAIN (ANALYZE, BUFFERS)`
+- Using `halfvec` to reduce vector storage requirements
+- Applying binary quantization for a smaller index footprint
+- Partitioning tables for filtered or multi-tenant workloads
+- Using iterative index scans when filtering reduces result coverage
+
+Compression can extend the useful range of a PostgreSQL deployment. The [AWS Database Blog's pgvector scaling guide](https://aws.amazon.com/blogs/database/scale-pgvector-with-binary-quantization-on-amazon-aurora-postgresql) describes `halfvec` as a middle option that stores vectors at half precision. It also explains how binary quantization can reduce the memory required for an HNSW index, with reranking used to recover precision where the workload requires it.
+
+Those options introduce engineering decisions. Quantization affects recall and may require a two-stage search. HNSW uses more memory than IVFFlat. Index creation consumes resources, and vector search competes with other PostgreSQL queries for CPU, memory, storage bandwidth, and cache space.
+
+That competition may be acceptable when the workload already belongs in PostgreSQL. It becomes more consequential when the same instance must handle transactional traffic, metadata filtering, ingestion, backups, and high-concurrency vector retrieval.
+
+pgvector is a practical choice when:
+
+- PostgreSQL is already the system of record.
+- Vector queries need relational joins and SQL predicates.
+- Existing PostgreSQL replication and recovery workflows are important.
+- The platform team wants one operational system.
+- Measured p95 and p99 latency meet the application's targets.
+- The team can provide the memory, CPU, storage, and tuning the index requires.
+
+Database licensing is only one part of that decision. Infrastructure cost includes compute, memory, storage, backups, replication, index builds, monitoring, and the engineering time required to tune the workload.
+
+## Where does Actian VectorAI DB fit best?
+
+Actian VectorAI DB is designed for vector retrieval that needs to run outside a PostgreSQL dependency.
+
+That includes embedded applications, edge hardware, local RAG, on-premises deployments, air-gapped environments, and systems that need to keep retrieving data while offline. A device can run its vector workload locally, then synchronize when connectivity returns, according to the deployment scenarios described in the supplied Actian comparison.
+
+This deployment model changes the operational boundary. The application does not need to place vector retrieval on the same PostgreSQL instance that stores its central relational data. A local vector engine can run beside the application and AI model, reducing the distance between the query and the data.
+
+The model is especially relevant for latency-sensitive applications. The Actian comparison describes a manufacturing sensor workload running on a 4 GB edge node. A query that takes more than 100 ms may be unsuitable for a defect-classification loop or another local inference path. The same comparison places sub-20 ms to 50 ms p99 latency among the requirements that make local vector retrieval valuable.
+
+Our published 1 million-vector result reports 12.7 ms p99 latency at 99.48% recall under the configuration shown above. That result gives engineering teams a concrete starting point for evaluation. It does not remove the need to test their own embeddings, filters, concurrency, hardware, and query mix.
+
+VectorAI DB's documented comparison points include:
+
+- Docker-based deployment
+- HNSW indexing
+- Real-time indexing
+- Metadata filtering
+- Python and JavaScript SDK access
+- gRPC and REST APIs
+- Local and edge-oriented deployment
+- A shared architecture across development and production environments
+
+The [Actian VectorAI DB comparison](https://www.actian.com/blog/developer/is-actian-vectorai-db-the-best-embedded-pgvector-alternative) is the primary source for the benchmark values, HNSW settings, metadata filtering, and edge and offline positioning. Actian's [Python vector database library guide](https://www.actian.com/blog/developer/5-best-python-vector-database-libraries) also describes Docker deployment, HNSW indexing, real-time indexing, SDK access, and edge and on-premises use cases.
+
+VectorAI DB is a strong candidate when:
+
+- The application needs standalone vector retrieval without PostgreSQL.
+- Queries must run locally or on edge hardware.
+- The system must support offline or sync-when-connected operation.
+- The application has a tight p99 latency target.
+- The team wants vector retrieval to have an independent resource and lifecycle boundary.
+- PostgreSQL remains useful elsewhere, but does not need to own the vector-search path.
+
+## How should teams compare deployment and operations?
+
+Performance is only one part of a production database decision. The deployment model determines who owns the surrounding work.
+
+| Decision area | pgvector | Actian VectorAI DB |
+| --- | --- | --- |
+| PostgreSQL dependency | Runs inside PostgreSQL | Runs independently of PostgreSQL |
+| Installation model | PostgreSQL extension | Local Docker-based deployment |
+| Primary deployment fit | PostgreSQL-centered applications | Standalone, embedded, edge, and on-premises applications |
+| Offline retrieval | Depends on the PostgreSQL deployment | Designed for local and offline-oriented scenarios |
+| Index types named in the brief | HNSW and IVFFlat | HNSW |
+| Query access | SQL through PostgreSQL | Python and JavaScript SDKs, gRPC, and REST APIs |
+| Metadata filtering | PostgreSQL filtering with vector-query behavior documented by pgvector | Metadata filtering described in the Actian comparison |
+| Replication and recovery | PostgreSQL WAL-based replication and point-in-time recovery | Validate the required deployment and synchronization model for the target workload |
+| Existing operational tooling | Reuses PostgreSQL monitoring, backup, and recovery workflows | Introduces a separate vector deployment boundary |
+| Resource ownership | Shares PostgreSQL resources and lifecycle | Vector retrieval runs independently of PostgreSQL resources |
+
+Before choosing, answer these operational questions:
+
+1. **Who owns scaling?** Will the PostgreSQL team tune the database, or will the application team own a separate vector component?
+2. **Where do backups live?** Which system stores the authoritative copy of embeddings and metadata?
+3. **How does recovery work?** What is the required recovery point and recovery time for the vector index?
+4. **What happens offline?** Can the application continue retrieval without a network connection?
+5. **Who owns metadata?** Will metadata remain in PostgreSQL, or does the vector deployment need to filter and retrieve it locally?
+6. **How do updates propagate?** What is the expected delay between a source-record change and an updated embedding?
+7. **Which workloads share resources?** Will vector indexing compete with transactions, reporting, or ingestion on the PostgreSQL instance?
+
+pgvector reduces the number of systems to operate when PostgreSQL already meets these requirements. VectorAI DB creates a separate vector-retrieval boundary when deployment independence, local operation, or tail latency matters more than keeping every query inside PostgreSQL.
+
+## Which option handles semantic search at scale?
+
+There is no single winner for every semantic-search workload. The better choice is the database whose architecture matches the production constraint.
+
+Choose **pgvector** when the application is PostgreSQL-centered. It keeps vectors beside relational data, supports SQL access, and fits existing PostgreSQL replication, backup, recovery, and monitoring workflows. It is a strong fit when relational joins and operational simplicity matter most, and measured performance meets the application's recall and latency targets.
+
+Choose **Actian VectorAI DB** when vector retrieval must operate independently. It is the stronger candidate for standalone, embedded, edge, offline, and latency-sensitive applications where the published benchmark and deployment model align with the workload.
+
+Use this routing matrix as a starting point:
+
+| If your highest priority is... | Start with... | Why |
+| --- | --- | --- |
+| Keeping vectors beside relational data in PostgreSQL | pgvector | Uses PostgreSQL tables, SQL, replication, and existing operations |
+| Standalone vector retrieval without PostgreSQL | Actian VectorAI DB | Runs independently through a local Docker instance |
+| Offline or sync-when-connected retrieval | Actian VectorAI DB | Supports the local and offline deployment scenario described in the Actian comparison |
+| Existing PostgreSQL expertise and infrastructure | pgvector | Reduces the operational surface introduced by a new system |
+| Tight p99 latency requirements | Actian VectorAI DB | The published 1 million-vector benchmark reports 12.7 ms p99 under its documented configuration |
+| Lower migration friction for a PostgreSQL application | pgvector | Keeps the vector workload in the existing database model |
+| Independent resource ownership for vector retrieval | Actian VectorAI DB | Separates vector search from the PostgreSQL dependency |
+
+This matrix is a routing tool, not a substitute for measurement. A PostgreSQL application with a 50 ms p99 requirement may perform well with pgvector after tuning. An edge application with a much smaller dataset may still need local retrieval because its network or operating environment makes a central PostgreSQL dependency unsuitable.
+
+## Validate the choice with a workload-specific benchmark
+
+The smallest credible production test uses representative data and a pass or fail threshold defined before testing begins.
+
+Match the following variables across the systems:
+
+- Embedding dimensions
+- Vector count and data distribution
+- Metadata fields and filter selectivity
+- Query mix
+- Concurrent users or requests
+- Recall target
+- Hardware and available memory
+- Index type and parameters
+- Ingestion rate
+- Update frequency
+
+Measure more than peak QPS. Record:
+
+1. Ingestion throughput and update latency
+2. Index build time
+3. Warm-query latency
+4. Cold-start behavior
+5. Filtered-search latency and recall
+6. Sustained throughput
+7. p95 latency
+8. p99 latency
+9. Memory and storage use
+10. Recovery and restart behavior
+
+Keep the benchmark labels precise. A result should identify the dataset, dimensions, hardware, index parameters, recall target, concurrency, and query type. Do not compare peak throughput from one configuration with sustained throughput from another.
+
+For pgvector, inspect the query plan with `EXPLAIN (ANALYZE, BUFFERS)` and verify that the expected index is being used. Test HNSW and IVFFlat where both are candidates. Measure the effect of `ef_search`, filtering, memory pressure, and quantization. If you use `halfvec` or binary quantization, measure recall with the actual embedding distribution and reranking process.
+
+For VectorAI DB, reproduce the same workload on the target deployment class. The published result used 1 million 768-dimensional vectors, 99.48% recall, a 64 GB RAM machine, and HNSW settings of `m=32`, `ef_construction=512`, and `ef_search=512`. Your production test should use the parameters and hardware available to the application.
+
+Set an explicit acceptance rule. For example, the application may require a specific recall percentage and a p99 latency below its user or inference budget. The test passes only when both conditions hold under representative concurrency and filtering.
+
+## Final recommendation and next step
+
+Use pgvector when PostgreSQL should remain the center of the application's data and operational model. Use Actian VectorAI DB when vector retrieval needs standalone, embedded, local, offline, or latency-sensitive deployment.
+
+If you are evaluating a [pgvector alternative for local or edge semantic search, explore the Actian VectorAI DB benchmark and comparison](https://www.actian.com/blog/developer/is-actian-vectorai-db-the-best-embedded-pgvector-alternative). It provides the published 1 million-vector results and the configuration required to interpret them.
+
+**Blocked:** An official Actian VectorAI DB product, pricing, or contact destination was not included in the supplied sources, so this draft does not make a product-evaluation or contact claim beyond the approved comparison CTA.
+
+## FAQ
+
+### What is the difference between Actian VectorAI DB and pgvector?
+
+Actian VectorAI DB is a standalone vector database that can run independently of PostgreSQL, including in local or edge-oriented deployments. pgvector is an open-source PostgreSQL extension that stores and searches vectors inside PostgreSQL. The right choice depends on whether PostgreSQL integration or standalone vector-search deployment is the primary requirement.
+
+### Which is faster, pgvector or Actian VectorAI DB?
+
+The supplied Actian benchmark reports 1,040 QPS and 12.7 ms p99 latency for VectorAI DB on 1 million 768-dimensional vectors at 99.48% recall. A cited pgvector test reports different results under different settings. Treat these figures as workload-specific and validate both systems with matched hardware, parameters, filters, concurrency, and recall targets.
+
+### When should you use pgvector instead of Actian VectorAI DB?
+
+Use pgvector when your application already relies on PostgreSQL and keeping relational data and vectors in one operational system is the priority. It is also a fit when PostgreSQL's replication, SQL access, filtering, and existing monitoring meet the application's measured latency and scale requirements.
+
+### When is Actian VectorAI DB a better fit?
+
+Actian VectorAI DB is a better fit when semantic search needs to run without a PostgreSQL dependency, on local or edge hardware, in offline environments, or under tighter tail-latency requirements. Confirm the fit with a benchmark that matches the production workload.
+
+### Does pgvector support HNSW and IVFFlat?
+
+Yes. The [pgvector repository](https://github.com/pgvector/pgvector) documents both HNSW and IVFFlat indexes. HNSW generally provides a stronger speed and recall tradeoff while using more memory and requiring longer index builds. IVFFlat uses less memory and builds faster, with different tuning requirements.
+
+### Can pgvector support filtered vector search?
+
+Yes. pgvector supports filtering alongside vector queries. The repository documents approaches including iterative scans, partial indexes, and partitioning. Because approximate-index filtering can reduce the number of matching results returned by an index scan, teams should measure filtered recall and latency with their actual filter selectivity.
+
+### Can Actian VectorAI DB run offline?
+
+The supplied Actian comparison positions VectorAI DB for local, edge, and offline-oriented retrieval, including sync-when-connected scenarios. The exact synchronization design depends on the application architecture and should be validated against the target deployment and data-update requirements.
+
+### What should a pgvector benchmark measure?
+
+A pgvector benchmark should measure ingestion, index build time, warm and cold query latency, filtered-search recall, sustained throughput, memory use, storage use, p95 latency, and p99 latency. Record the embedding dimensions, vector count, index type, HNSW or IVFFlat parameters, hardware, concurrency, and query mix.
+
+### Does Actian VectorAI DB replace PostgreSQL?
+
+Actian VectorAI DB addresses the vector-retrieval portion of an application and can run without PostgreSQL. Whether it replaces any PostgreSQL role depends on the application's relational data, transaction, metadata, access-control, backup, and recovery requirements. Many architectures can use a dedicated vector engine alongside an existing relational system.
+
+### How should teams choose between pgvector and a dedicated vector database?
+
+Start with the production constraint. Choose pgvector when PostgreSQL integration, relational joins, and existing operations are the priority. Evaluate Actian VectorAI DB when vector retrieval needs an independent deployment boundary, local or offline operation, edge placement, or a tighter p99 latency target. Confirm the decision with matched workload testing.
+
+---
+
+## Editor's notes (inline)
+
+- Benchmark figures are presented as Actian's published results, not independent validation or a universal apples-to-apples comparison. Before publication, verify the complete methodology, including concurrency, query mix, dataset preparation, hardware equivalence, and recall calculation.
+- The pgvector comparison figures are configuration-dependent results supplied in the brief and Actian source material. Keep the workload, hardware, recall, and index-parameter caveats attached to every benchmark reference.
+- The draft intentionally avoids unsupported claims about VectorAI DB pricing, tier limits, clustering, SLAs, managed deployment, multi-region behavior, and production limits.
+- **Blocked:** Add an approved official VectorAI DB product, documentation, pricing, and contact destination before publication if the page needs a product-evaluation or contact CTA.
+- Visuals recommended: a deployment comparison table, a labeled benchmark chart, an architecture diagram contrasting PostgreSQL with pgvector against standalone or embedded VectorAI DB, and a decision flowchart.
+- Add FAQ schema with the expanded FAQ content if the publishing system supports it. Article schema is also appropriate. HowTo schema is not recommended because this is a comparison article rather than a procedural guide.
+- Consider an approved technical review by an Actian VectorAI DB engineer and an independent PostgreSQL or pgvector practitioner before publication. No names or quotes were supplied, so no quotes are included.
+- Suggested related link: [Turn Your Internal Docs into an AI-Powered Knowledge Base](https://www.actian.com/blog/product-launches/turn-your-internal-docs-into-an-ai-powered-knowledge-base).
